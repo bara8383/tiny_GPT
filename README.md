@@ -1,120 +1,104 @@
-# tiny_GPT (PyTorch, minimal and readable)
+# tiny_GPT
 
-Transformer内部理解のための、最小GPT風言語モデルです。
+## 1. このプロジェクトの目的
 
-## 特徴
+このリポジトリは、**最小構成の GPT 風言語モデル**を PyTorch で実装し、
+次トークン予測（next-token prediction）と自己回帰生成の流れを学ぶことを目的としています。
 
-- `nn.Transformer` 不使用
-- Hugging Face 不使用
-- 既製 tokenizer 不使用（文字単位 tokenizer を自作）
-- `batch_first=True` 相当の shape を統一利用: **`[batch, seq_len, d_model]`**
-- causal mask の向きが明確
-- attention weights を返却可能
-- `generate.py` で `temperature` 指定可能
-- 主要ハイパーパラメータは `config.py` で管理
+- 文字単位 tokenizer
+- causal self-attention
+- multi-head attention
+- Transformer block
+- 学習スクリプト
+- 生成スクリプト
 
-## ファイル構成
+を段階的に確認できます。
 
-- `config.py` : ハイパーパラメータ
-- `tokenizer.py` : 文字単位 tokenizer
-- `dataset.py` : next-token 用 Dataset
-- `model.py` : attention / block / GPT本体
-- `train.py` : 最小学習スクリプト
-- `generate.py` : 生成スクリプト
+## 2. ディレクトリ構成
 
-## 1) データ準備
+- `config.py` : ハイパーパラメータ設定
+- `tokenizer.py` : 文字単位 tokenizer (`fit/encode/decode`)
+- `dataset.py` : `x, y` の next-token 用データセット
+- `attention.py` : single-head / multi-head causal self-attention
+- `block.py` : FeedForward と TransformerBlock (Pre-LN)
+- `model.py` : GPT 本体
+- `train.py` : 学習
+- `generate.py` : 自己回帰生成
+- `test_tiny_gpt.py` : 最小テスト
 
-`data.txt` をプロジェクト直下に作成し、学習したいテキストを入れてください。
+## 3. 学習方法
 
-例:
-
-```txt
-hello tiny gpt.
-this is a small demo.
-```
-
-## 2) 学習
+1. 学習テキストを `input.txt` に置く
+2. 学習実行
 
 ```bash
 python train.py
 ```
 
-`checkpoint.pt` が保存されます。
+出力:
+- `model.pt`
+- `tokenizer.json`
+- `model_config.json`
 
-## 3) 生成
+## 4. 生成方法
+
+### sampling
 
 ```bash
-python generate.py --prompt "hello" --max_new_tokens 80 --temperature 0.9
+python generate.py --prompt "hello" --max_new_tokens 80 --temperature 0.9 --do_sample
 ```
 
-## テンソル shape の流れ
+### greedy
 
-### 入力と埋め込み
+```bash
+python generate.py --prompt "hello" --max_new_tokens 80 --temperature 1.0 --greedy
+```
 
-1. `idx`: トークンID
-   - shape: **`[B, T]`**
-2. token embedding
-   - `token_emb = Embedding(idx)`
-   - shape: **`[B, T, C]`**
-3. position embedding
-   - `positions = arange(T)` → shape: `[T]`
-   - `pos_emb = Embedding(positions)` → shape: `[T, C]`
-   - broadcast で `[B, T, C]` 相当に加算
-4. `x = token_emb + pos_emb`
-   - shape: **`[B, T, C]`**
+## 5. 各テンソル shape の流れ
 
-### Single-head causal self-attention
+- input ids: `[batch, seq_len]`
+- token embedding: `[batch, seq_len, d_model]`
+- positional embedding 加算後: `[batch, seq_len, d_model]`
+- attention scores: `[batch, n_heads, seq_len, seq_len]`
+- block output: `[batch, seq_len, d_model]`
+- logits: `[batch, seq_len, vocab_size]`
 
-1. `q, k, v = Linear(x)`
-   - shape: **`[B, T, head_dim]`**
-2. スコア
-   - `scores = q @ k^T / sqrt(head_dim)`
-   - shape: **`[B, T, T]`**
-3. causal mask（下三角）
-   - `mask[i, j] = 1` if `j <= i`
-   - 未来 (`j > i`) は `-inf` で無効化
-4. `attn_weights = softmax(scores)`
-   - shape: **`[B, T, T]`**
-5. 出力
-   - `out = attn_weights @ v`
-   - shape: **`[B, T, head_dim]`**
+### 補足説明
 
-### Multi-head
+- **causal mask とは何か**  
+  各時刻 `t` が `t` より未来の token を見ないようにするマスクです。実装では下三角を残し、右上三角（未来側）を潰します。
 
-- 各head出力 `[B, T, head_dim]` を結合
-- `concat -> [B, T, C]`
-- `Linear` で `[B, T, C]`
-- attention weights を返す場合: **`[B, n_heads, T, T]`**
+- **なぜ future token を見てはいけないのか**  
+  学習時と生成時で同じ条件（過去と現在のみ利用）を保つためです。未来情報を見てしまうと不正な学習になります。
 
-### Transformer block
+- **next-token prediction とは何か**  
+  `x` の各位置から「次の 1 文字」を当てるタスクです。  
+  例: `x = text[i : i+seq_len]`, `y = text[i+1 : i+seq_len+1]`
 
-Pre-Norm + Residual:
+## 推奨初期値
 
-1. `x = x + Attention(LN(x))`
-2. `x = x + FFN(LN(x))`
+```python
+vocab_size = None
+seq_len = 64
+batch_size = 32
+d_model = 128
+n_heads = 4
+n_layers = 2
+d_ff = 256
+dropout = 0.1
+learning_rate = 3e-4
+max_steps = 2000
+eval_interval = 100
+device = "cuda"
+```
 
-各段で shape は **`[B, T, C]`** のまま。
+CPU 向けに小さくするなら:
 
-### 出力と loss
-
-1. `logits = lm_head(x)`
-   - shape: **`[B, T, vocab_size]`**
-2. target `y`
-   - shape: **`[B, T]`**
-3. Cross Entropy
-   - `logits -> [B*T, vocab_size]`
-   - `targets -> [B*T]`
-
-## 学習タスク（next-token prediction）
-
-Dataset は以下を返します。
-
-- `x = data[i : i+block_size]`
-- `y = data[i+1 : i+block_size+1]`
-
-つまり、`y[t]` は `x[t]` の次トークンです。
-
-## 補足
-
-- あくまで理解用の最小実装です。
-- 高性能化（学習率スケジューラ、weight decay調整、mixed precision、BPE等）は意図的に省いています。
+```python
+seq_len = 32
+batch_size = 16
+d_model = 64
+n_heads = 4
+n_layers = 2
+d_ff = 128
+```
