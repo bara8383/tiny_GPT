@@ -1,0 +1,4 @@
+hello tiny gpt.
+this is a small demo for learning transformers.
+hello tiny gpt.
+this is a small demo for learning transformers.
