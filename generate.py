@@ -1,62 +1,98 @@
-"""Text generation script for the tiny GPT language model."""
+"""Autoregressive text generation script for tiny GPT."""
 
 import argparse
+import json
 
 import torch
 
-from config import GPTConfig
 from model import GPTLanguageModel
 from tokenizer import CharTokenizer
 
 
-def load_model(checkpoint_path: str, device: str) -> tuple[GPTLanguageModel, CharTokenizer, GPTConfig]:
-    """Load model/tokenizer/config from checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    cfg = GPTConfig(**checkpoint["config"])
+def load_artifacts(model_path: str, tokenizer_path: str, config_path: str, device: str):
+    with open(tokenizer_path, "r", encoding="utf-8") as f:
+        tok_state = json.load(f)
+    tokenizer = CharTokenizer.from_state_dict(tok_state)
 
-    vocab = checkpoint["vocab"]
-    stoi = {ch: i for i, ch in enumerate(vocab)}
-    itos = {i: ch for ch, i in stoi.items()}
-    tokenizer = CharTokenizer(vocab=vocab, stoi=stoi, itos=itos)
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
 
     model = GPTLanguageModel(
-        vocab_size=len(vocab),
-        block_size=cfg.block_size,
-        d_model=cfg.d_model,
-        n_heads=cfg.n_heads,
-        n_layers=cfg.n_layers,
-        d_ff=cfg.d_ff,
-        dropout=cfg.dropout,
+        vocab_size=tokenizer.vocab_size,
+        seq_len=cfg["seq_len"],
+        d_model=cfg["d_model"],
+        n_heads=cfg["n_heads"],
+        n_layers=cfg["n_layers"],
+        d_ff=cfg["d_ff"],
+        dropout=cfg["dropout"],
     ).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
+
     return model, tokenizer, cfg
 
 
+@torch.no_grad()
+def generate_text(
+    model: GPTLanguageModel,
+    tokenizer: CharTokenizer,
+    prompt: str,
+    max_new_tokens: int,
+    temperature: float,
+    do_sample: bool,
+    device: str,
+) -> str:
+    ids = tokenizer.encode(prompt) if prompt else [0]
+    idx = torch.tensor([ids], dtype=torch.long, device=device)
+
+    for _ in range(max_new_tokens):
+        idx_cond = idx[:, -model.seq_len :]
+        logits, _, _ = model(idx_cond)
+
+        # We only use the last time-step logits because that predicts the next token.
+        next_logits = logits[:, -1, :] / temperature
+
+        if do_sample:
+            probs = torch.softmax(next_logits, dim=-1)
+            next_id = torch.multinomial(probs, num_samples=1)
+        else:
+            next_id = torch.argmax(next_logits, dim=-1, keepdim=True)
+
+        # Append one token and repeat (autoregressive generation).
+        idx = torch.cat([idx, next_id], dim=1)
+
+    return tokenizer.decode(idx[0].tolist())
+
+
 def main() -> None:
-    """Generate continuation text from a prompt."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", default="checkpoint.pt")
+    parser.add_argument("--model", default="model.pt")
+    parser.add_argument("--tokenizer", default="tokenizer.json")
+    parser.add_argument("--config", default="model_config.json")
     parser.add_argument("--prompt", default="")
-    parser.add_argument("--max_new_tokens", type=int, default=None)
-    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--max_new_tokens", type=int, default=100)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--do_sample", action="store_true")
+    parser.add_argument("--greedy", action="store_true")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model, tokenizer, cfg = load_model(args.checkpoint, device)
+    model, tokenizer, _ = load_artifacts(args.model, args.tokenizer, args.config, device)
 
-    max_new_tokens = args.max_new_tokens or cfg.max_new_tokens
-    temperature = args.temperature if args.temperature is not None else cfg.temperature
+    do_sample = args.do_sample
+    if args.greedy:
+        do_sample = False
 
-    input_ids = tokenizer.encode(args.prompt)
-    if not input_ids:
-        input_ids = [0]
-
-    idx = torch.tensor([input_ids], dtype=torch.long, device=device)  # [1, T]
-    out = model.generate(idx, max_new_tokens=max_new_tokens, temperature=temperature)
-
-    generated_text = tokenizer.decode(out[0].tolist())
-    print(generated_text)
+    out = generate_text(
+        model=model,
+        tokenizer=tokenizer,
+        prompt=args.prompt,
+        max_new_tokens=args.max_new_tokens,
+        temperature=args.temperature,
+        do_sample=do_sample,
+        device=device,
+    )
+    print(out)
 
 
 if __name__ == "__main__":

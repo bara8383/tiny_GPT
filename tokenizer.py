@@ -1,39 +1,49 @@
-"""Character-level tokenizer implementation for educational GPT."""
-
-from dataclasses import dataclass
+"""Character-level tokenizer for tiny GPT."""
 
 
-@dataclass
 class CharTokenizer:
-    """Simple character-level tokenizer.
+    """A tiny character-level tokenizer.
 
-    Attributes:
-        vocab: Sorted list of unique characters.
-        stoi: Character-to-index mapping.
-        itos: Index-to-character mapping.
+    Stores:
+    - stoi: string(char) -> int(id)
+    - itos: int(id) -> string(char)
     """
 
-    vocab: list[str]
-    stoi: dict[str, int]
-    itos: dict[int, str]
+    def __init__(self) -> None:
+        self.stoi: dict[str, int] = {}
+        self.itos: dict[int, str] = {}
 
-    @classmethod
-    def from_text(cls, text: str) -> "CharTokenizer":
-        """Build tokenizer vocabulary from raw text."""
-        vocab = sorted(list(set(text)))
-        stoi = {ch: i for i, ch in enumerate(vocab)}
-        itos = {i: ch for ch, i in stoi.items()}
-        return cls(vocab=vocab, stoi=stoi, itos=itos)
+    def fit(self, text: str) -> None:
+        """Build vocabulary from raw text."""
+        vocab = sorted(set(text))
+        self.stoi = {ch: i for i, ch in enumerate(vocab)}
+        self.itos = {i: ch for ch, i in self.stoi.items()}
+
+    def encode(self, text: str) -> list[int]:
+        """Encode text into token IDs."""
+        if not self.stoi:
+            raise ValueError("Tokenizer is not fitted. Call fit(text) first.")
+        return [self.stoi[ch] for ch in text]
+
+    def decode(self, ids: list[int]) -> str:
+        """Decode token IDs back into text."""
+        if not self.itos:
+            raise ValueError("Tokenizer is not fitted. Call fit(text) first.")
+        return "".join(self.itos[i] for i in ids)
 
     @property
     def vocab_size(self) -> int:
         """Return vocabulary size."""
-        return len(self.vocab)
+        return len(self.stoi)
 
-    def encode(self, text: str) -> list[int]:
-        """Convert string into list of token IDs."""
-        return [self.stoi[ch] for ch in text]
+    def state_dict(self) -> dict:
+        """Return serializable tokenizer state."""
+        return {"stoi": self.stoi, "itos": self.itos}
 
-    def decode(self, ids: list[int]) -> str:
-        """Convert token IDs back to string."""
-        return "".join(self.itos[i] for i in ids)
+    @classmethod
+    def from_state_dict(cls, state: dict) -> "CharTokenizer":
+        """Restore tokenizer from saved state."""
+        tok = cls()
+        tok.stoi = {str(k): int(v) for k, v in state["stoi"].items()}
+        tok.itos = {int(k): str(v) for k, v in state["itos"].items()}
+        return tok
